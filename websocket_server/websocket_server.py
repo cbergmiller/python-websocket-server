@@ -1,20 +1,19 @@
 # Author: Johan Hanssen Seferidis
 # License: MIT
 
-import re, sys
+import re
+import sys
 import struct
 from base64 import b64encode
 from hashlib import sha1
+import logging
 
-if sys.version_info[0] < 3 :
+if sys.version_info[0] < 3:
 	from SocketServer import ThreadingMixIn, TCPServer, StreamRequestHandler
 else:
 	from socketserver import ThreadingMixIn, TCPServer, StreamRequestHandler
 
-
-
-
-'''
+"""
 +-+-+-+-+-------+-+-------------+-------------------------------+
  0                   1                   2                   3
  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
@@ -28,9 +27,12 @@ else:
 + - - - - - - - - - - - - - - - +-------------------------------+
 |                     Payload Data continued ...                |
 +---------------------------------------------------------------+
-'''
+"""
 
-FIN    = 0x80
+
+_logger = logging.getLogger(__name__)
+
+FIN = 0x80
 OPCODE = 0x0f
 MASKED = 0x80
 PAYLOAD_LEN = 0x7f
@@ -38,8 +40,7 @@ PAYLOAD_LEN_EXT16 = 0x7e
 PAYLOAD_LEN_EXT64 = 0x7f
 
 OPCODE_TEXT = 0x01
-CLOSE_CONN  = 0x8
-
+CLOSE_CONN = 0x8
 
 
 # -------------------------------- API ---------------------------------
@@ -47,53 +48,58 @@ CLOSE_CONN  = 0x8
 class API():
 	def run_forever(self):
 		try:
-			print("Listening on port %d for clients.." % self.port)
+			_logger.info("Listening on port %d for clients.." % self.port)
 			self.serve_forever()
 		except KeyboardInterrupt:
 			self.server_close()
-			print("Server terminated.")
+			_logger.info("Server terminated.")
 		except Exception as e:
-			print("ERROR: WebSocketsServer: "+str(e))
+			_logger.info("ERROR: WebSocketsServer: " + str(e))
 			exit(1)
+
 	def new_client(self, client, server):
 		pass
+
 	def client_left(self, client, server):
 		pass
+
 	def message_received(self, client, server, message):
 		pass
+
 	def set_fn_new_client(self, fn):
-		self.new_client=fn
+		self.new_client = fn
+
 	def set_fn_client_left(self, fn):
-		self.client_left=fn
+		self.client_left = fn
+
 	def set_fn_message_received(self, fn):
-		self.message_received=fn
+		self.message_received = fn
+
 	def send_message(self, client, msg):
 		self._unicast_(client, msg)
+
 	def send_message_to_all(self, msg):
 		self._multicast_(msg)
-
 
 
 # ------------------------- Implementation -----------------------------
 
 class WebsocketServer(ThreadingMixIn, TCPServer, API):
-
 	allow_reuse_address = True
-	daemon_threads = True # comment to keep threads alive until finished
-
-	'''
+	daemon_threads = True  # comment to keep threads alive until finished
+	"""
 	clients is a list of dict:
 	    {
 	     'id'      : id,
 	     'handler' : handler,
 	     'address' : (addr, port)
 	    }
-	'''
-	clients=[]
-	id_counter=0
+	"""
+	clients = []
+	id_counter = 0
 
 	def __init__(self, port, host='127.0.0.1'):
-		self.port=port
+		self.port = port
 		TCPServer.__init__(self, (host, port), WebSocketHandler)
 
 	def _message_received_(self, handler, msg):
@@ -101,38 +107,36 @@ class WebsocketServer(ThreadingMixIn, TCPServer, API):
 
 	def _new_client_(self, handler):
 		self.id_counter += 1
-		client={
-			'id'      : self.id_counter,
-			'handler' : handler,
-			'address' : handler.client_address
+		client = {
+			'id': self.id_counter,
+			'handler': handler,
+			'address': handler.client_address
 		}
 		self.clients.append(client)
 		self.new_client(client, self)
 
 	def _client_left_(self, handler):
-		client=self.handler_to_client(handler)
+		client = self.handler_to_client(handler)
 		self.client_left(client, self)
 		if client in self.clients:
 			self.clients.remove(client)
-	
+
 	def _unicast_(self, to_client, msg):
 		to_client['handler'].send_message(msg)
 
 	def _multicast_(self, msg):
 		for client in self.clients:
 			self._unicast_(client, msg)
-		
+
 	def handler_to_client(self, handler):
 		for client in self.clients:
 			if client['handler'] == handler:
 				return client
 
 
-
 class WebSocketHandler(StreamRequestHandler):
-
 	def __init__(self, socket, addr, server):
-		self.server=server
+		self.server = server
 		StreamRequestHandler.__init__(self, socket, addr, server)
 
 	def setup(self):
@@ -160,21 +164,21 @@ class WebSocketHandler(StreamRequestHandler):
 
 		b1, b2 = self.read_bytes(2)
 
-		fin    = b1 & FIN
+		fin = b1 & FIN
 		opcode = b1 & OPCODE
 		masked = b2 & MASKED
 		payload_length = b2 & PAYLOAD_LEN
 
 		if not b1:
-			print("Client closed connection.")
+			_logger.info("Client closed connection.")
 			self.keep_alive = 0
 			return
 		if opcode == CLOSE_CONN:
-			print("Client asked to close connection.")
+			_logger.info("Client asked to close connection.")
 			self.keep_alive = 0
 			return
 		if not masked:
-			print("Client must always be masked.")
+			_logger.warning("Client must always be masked.")
 			self.keep_alive = 0
 			return
 
@@ -199,20 +203,19 @@ class WebSocketHandler(StreamRequestHandler):
 		Fragmented(=continuation) messages are not being used since their usage
 		is needed in very limited cases - when we don't know the payload length.
 		'''
-	
+
 		# Validate message
 		if isinstance(message, bytes):
-			message = try_decode_UTF8(message) # this is slower but assures we have UTF-8
+			message = try_decode_UTF8(message)  # this is slower but assures we have UTF-8
 			if not message:
-				print("Can\'t send message, message is not valid UTF-8")
+				_logger.info("Can\'t send message, message is not valid UTF-8")
 				return False
 		elif isinstance(message, str) or isinstance(message, unicode):
 			pass
 		else:
-			print('Can\'t send message, message has to be a string or bytes. Given type is %s' % type(message))
-			return False
+			raise TypeError('Can\'t send message, message has to be a string or bytes. Given type is %s' % type(message))
 
-		header  = bytearray()
+		header = bytearray()
 		payload = encode_to_UTF8(message)
 		payload_length = len(payload)
 
@@ -232,10 +235,9 @@ class WebSocketHandler(StreamRequestHandler):
 			header.append(FIN | OPCODE_TEXT)
 			header.append(PAYLOAD_LEN_EXT64)
 			header.extend(struct.pack(">Q", payload_length))
-			
+
 		else:
-			raise Exception("Message is too big. Consider breaking it into chunks.")
-			return
+			raise ValueError("Message is too big. Consider breaking it into chunks.")
 
 		self.request.send(header + payload)
 
@@ -249,22 +251,22 @@ class WebSocketHandler(StreamRequestHandler):
 		if key:
 			key = key.group(1)
 		else:
-			print("Client tried to connect but was missing a key")
+			_logger.info("Client tried to connect but was missing a key")
 			self.keep_alive = False
 			return
 		response = self.make_handshake_response(key)
 		self.handshake_done = self.request.send(response.encode())
 		self.valid_client = True
 		self.server._new_client_(self)
-		
+
 	def make_handshake_response(self, key):
 		return \
-		  'HTTP/1.1 101 Switching Protocols\r\n'\
-		  'Upgrade: websocket\r\n'              \
-		  'Connection: Upgrade\r\n'             \
-		  'Sec-WebSocket-Accept: %s\r\n'        \
-		  '\r\n' % self.calculate_response_key(key)
-		
+			'HTTP/1.1 101 Switching Protocols\r\n' \
+			'Upgrade: websocket\r\n' \
+			'Connection: Upgrade\r\n' \
+			'Sec-WebSocket-Accept: %s\r\n' \
+			'\r\n' % self.calculate_response_key(key)
+
 	def calculate_response_key(self, key):
 		GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
 		hash = sha1(key.encode() + GUID.encode())
@@ -275,17 +277,12 @@ class WebSocketHandler(StreamRequestHandler):
 		self.server._client_left_(self)
 
 
-
 def encode_to_UTF8(data):
 	try:
 		return data.encode('UTF-8')
 	except UnicodeEncodeError as e:
-		print("Could not encode data to UTF-8 -- %s" % e)
+		_logger.info("Could not encode data to UTF-8 -- %s" % e)
 		return False
-	except Exception as e:
-		raise(e)
-		return False
-
 
 
 def try_decode_UTF8(data):
@@ -293,12 +290,9 @@ def try_decode_UTF8(data):
 		return data.decode('utf-8')
 	except UnicodeDecodeError:
 		return False
-	except Exception as e:
-		raise(e)
-		
 
 
 # This is only for testing purposes
 class DummyWebsocketHandler(WebSocketHandler):
-    def __init__(self, *_):
-        pass
+	def __init__(self, *_):
+		pass
